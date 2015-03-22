@@ -1,0 +1,98 @@
+---
+title: "Prediction of Manner of Exercise based on Wearable Data"
+author: "Eotoke"
+output: 
+  html_document:
+    keep_md: true
+---
+
+## Executive Summary
+
+6 participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. Based on the data acquired from their accelerometers on the belt, forearm, arm, and dumbell, this project aims to predict the way the exercise was conducted. 
+
+Using a 7:3 ratio, the training dataset provided was split into the training set for training and testing set for cross validation. Computed columns(i.e. stddev, variance, total, amplitude, min, max), columns which had a high number of NAs (>80%), columns unrelated to accelerometers and columns with near zero variance were then removed from the training set to speed up the model training. For training of the prediction models, random forest and boosting with cross validation were used and subsequently compared against each other using the confusion matrix for the testing set's "classe" prediction. 
+As the boosting model was shown to have a higher accuracy based on the confusion matrix, it was selected to predict the results from the validation dataset for submission.
+
+## Building of Model
+
+- First, we download the training and testing data from the URL <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv> and <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv> and store it as "pml-training.csv" and "pml-testing.csv" respectively. Load "pml-training.csv" into **trainData** and load "pml-testing.csv" into **validationData.csv**. Set "cache=TRUE" for the load_data code chunk to minimise time taken for loading. 
+
+```{r load_data, cache=TRUE, warning=FALSE}
+#set seed for reproducibility
+set.seed(1234)
+
+#load data
+trainData<-read.csv("pml-training.csv",header=T,sep=",")
+validationData<-read.csv("pml-testing.csv",header=T,sep=",")
+```
+
+- Split **trainData** in a 7:3 ratio into **training** and **testing** based on the field "classe". This split is necessary as we will be using **training** to train the prediction model and **testing** to cross validate the "classe" results of the prediction models. The model with the higher accuracy will be selected to predict **validationData**.
+
+```{r split_data, cache=TRUE, warning=FALSE}
+#split trainData into training and testing based on classe
+library(caret)
+inTrain<-createDataPartition(y=trainData$classe,p=.7,list=F)
+training<-trainData[inTrain,]
+testing<-trainData[-inTrain,]
+```
+
+- From the summary of **training**, it can be seen that there are some columns which are not necessary as they either contain >80% NAs, are precomputed columns (i.e. min, max, amplitude, total, var, stddev), are not related to the accelerometer (i.e x, num_windows,timestamps) or have near zero variance. To speed up the model training and train only on columns likely to affect the results, we remove these identified columns.
+
+```{r summary_training}
+#looking at a rough summary of training
+summary(training)
+```
+
+```{r clean_training}
+#select only the necessary columns
+training<-training[,-c(1,nearZeroVar(training),grep("amplitude|num_window|timestamp|stddev|avg|var|min|max|total",colnames(training)))]
+```
+
+- As random forest and boosting are normally the algorithms with better results, train 2 training models based on the random forest algorithm and the boosting with cross validation. 
+
+```{r parallel, echo=FALSE, message=FALSE, warning=FALSE}
+#trying to run the training in parellel
+library(cluster)
+library(parallel)
+library(doSNOW)
+coreNumber=max(detectCores(),1)-1
+cluster=makeCluster(coreNumber,type="SOCK",outfile="")
+registerDoSNOW(cluster)
+
+gbmGrid<-expand.grid(interaction.depth=c(1,5,9),n.trees=(1:10)*50,shrinkage=0.1)
+```
+
+```{r training_rf, cache=TRUE, message=FALSE, warning=FALSE}
+library(randomForest)
+trainRF<-randomForest(classe ~ .,data=training,proximity=T)
+```
+
+- For gradient boosting machine, we will proceed with a 10-fold cv to achieve better results. We will also tune the gbm results by fixing shrinkage/learning rate to 0.1, number of iterations to (1:10)*50 and interaction depth to c(1,5,9).
+
+```{r training_boost, cache=TRUE, message=FALSE, warning=FALSE}
+#library(caret)
+trainBoost<-train(classe ~ .,method="gbm",data=training,verbose=F,trControl=trainControl(method="cv",number=10),tuneGrid=gbmGrid)
+```
+
+## Comparing models with Confusion Matrix and estimating out of sample error
+
+To compare the 2 models, we will construct 2 confusion matrixes based on the prediction for the **testing** dataset. This will also return us the estimated out of sample error if we were to use the training model on **validationData**.
+
+```{r predict_rf, warning=FALSE}
+#cross validating by predicting the classe on the testing set using Random Forest
+resultRF<-predict(trainRF,newdata=testing)
+confusionMatrix(testing$classe,resultRF)
+```
+
+```{r predict_boost, warning=FALSE}
+#cross validating by predicting the classe on the testing set using Boosting with cross validation
+resultBoost<-predict(trainBoost,newdata=testing)
+confusionMatrix(testing$classe,resultBoost)
+```
+
+From the confusion matrix, boosting with cross validation has slightly higher accuracy. Hence this model will be selected for predicting "classe" on **validationData**. The out-of-sample error is estimated to be larger than 0.3% based on the in-sample error rate obtained from cross validation on **testing**.
+
+```{r predict_result}
+#use prediction model based on gbm to predict the 20 different test cases
+predict(trainBoost,newdata=validationData)
+```
